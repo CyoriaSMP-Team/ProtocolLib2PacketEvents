@@ -280,7 +280,8 @@ public class PacketManagerImpl implements ProtocolManager, ListenerManager {
         DeferredKey key = deferredKey(event.getPlayer(), sending);
         boolean pending = key != null && hasDeferredTail(key);
         if (needsMain || hasAsync || pending) {
-            enqueueDeferred(key, event, bucket, sending, needsMain, hasAsync, async);
+            enqueueDeferred(key, event, bucket, sending, needsMain, hasAsync, async,
+                    null, false);
             return;
         }
         invokeBucket(bucket, event, sending);
@@ -464,31 +465,51 @@ public class PacketManagerImpl implements ProtocolManager, ListenerManager {
                 ? existing : TemporaryPlayerAdapter.create(event.getUser());
         if (player == null) return;
 
+        DeferredKey key = deferredKey(player, sending);
+        boolean needsMain = needsMainThreadHop(bucket, sending);
+        boolean pending = key != null && hasDeferredTail(key);
+        boolean deferred = needsMain || hasAsync || pending;
+
+        // A PacketEvents event owns a live Netty buffer whose lifetime ends with the callback.
+        // If we need to cross that boundary, clone the event first. PacketEvents' clone uses a
+        // retained duplicate and cleanUp() releases it when our continuation is finished.
+        ProtocolPacketEvent sourceEvent = event;
+        ProtocolPacketEvent heldEvent = null;
+        if (deferred) {
+            heldEvent = event.clone();
+            // Preserve modifications made by PacketEvents listeners that ran before P2P at
+            // MONITOR priority. PacketWrapper.readEvent() copies from lastUsedWrapper when the
+            // wrapper class matches, while the newly decoded wrapper remains backed by our
+            // retained duplicate rather than the soon-to-be-cleared original buffer.
+            heldEvent.setLastUsedWrapper(event.getLastUsedWrapper());
+            sourceEvent = heldEvent;
+        }
+
         PacketContainer container = sending
-                ? new PacketContainer(type, (PacketSendEvent) event)
-                : new PacketContainer(type, (PacketReceiveEvent) event);
+                ? new PacketContainer(type, (PacketSendEvent) sourceEvent)
+                : new PacketContainer(type, (PacketReceiveEvent) sourceEvent);
         PacketEvent packetEvent = sending
                 ? PacketEvent.fromServer(this, container,
                         new NetworkMarker(NetworkMarkerSide.SERVER.side, type), player)
                 : PacketEvent.fromClient(this, container,
                         new NetworkMarker(NetworkMarkerSide.CLIENT.side, type), player);
 
-        // P2P runs at PacketEvents MONITOR priority. Preserve cancellation decisions made by
-        // earlier PacketEvents listeners and allow ProtocolLib listeners to explicitly uncancel.
-        packetEvent.setCancelled(event.isCancelled());
+        // Never resurrect a packet cancelled by an earlier PacketEvents listener. P2P may add
+        // another cancellation, but coexistence with native PacketEvents plugins wins here.
+        boolean externallyCancelled = event.isCancelled();
+        packetEvent.setCancelled(externallyCancelled);
 
-        DeferredKey key = deferredKey(player, sending);
-        boolean needsMain = needsMainThreadHop(bucket, sending);
-        boolean pending = key != null && hasDeferredTail(key);
-        if (needsMain || hasAsync || pending) {
+        if (deferred) {
             // Logically hold this packet without holding the network callback. The completed
             // packet is replayed through PacketEvents' silent transport after all P2P work.
             event.setCancelled(true);
-            enqueueDeferred(key, packetEvent, bucket, sending, needsMain, hasAsync, async);
+            enqueueDeferred(key, packetEvent, bucket, sending, needsMain, hasAsync, async,
+                    heldEvent, externallyCancelled);
             return;
         }
 
         invokeBucket(bucket, packetEvent, sending);
+        if (externallyCancelled) packetEvent.setCancelled(true);
         event.setCancelled(packetEvent.isCancelled());
         if (packetEvent.isCancelled()) return;
 
@@ -509,11 +530,13 @@ public class PacketManagerImpl implements ProtocolManager, ListenerManager {
 
     private void enqueueDeferred(DeferredKey key, PacketEvent event, PacketListener[] bucket,
                                  boolean sending, boolean needsMain, boolean hasAsync,
-                                 AsynchronousManagerImpl async) {
+                                 AsynchronousManagerImpl async, ProtocolPacketEvent heldEvent,
+                                 boolean externallyCancelled) {
         if (key == null) {
             // Temporary players should normally still expose a UUID. If one does not, use an
             // independent continuation instead of ever blocking the packet thread.
-            runDeferred(event, bucket, sending, needsMain, hasAsync, async);
+            runDeferred(event, bucket, sending, needsMain, hasAsync, async, externallyCancelled)
+                    .whenComplete((value, error) -> cleanUpHeld(heldEvent));
             return;
         }
 
@@ -522,18 +545,24 @@ public class PacketManagerImpl implements ProtocolManager, ListenerManager {
                     ? CompletableFuture.completedFuture(null)
                     : previous.handle((value, error) -> null);
             return base.thenCompose(value ->
-                    runDeferred(event, bucket, sending, needsMain, hasAsync, async));
+                    runDeferred(event, bucket, sending, needsMain, hasAsync, async,
+                            externallyCancelled));
         });
         // Attach cleanup after compute() returns. A continuation can complete synchronously, and
         // mutating the same ConcurrentHashMap from inside its compute callback is a recursive update.
-        next.whenComplete((value, error) -> deferredTails.remove(key, next));
+        next.whenComplete((value, error) -> {
+            cleanUpHeld(heldEvent);
+            deferredTails.remove(key, next);
+        });
     }
 
     private CompletableFuture<Void> runDeferred(PacketEvent event, PacketListener[] bucket,
                                                 boolean sending, boolean needsMain,
-                                                boolean hasAsync, AsynchronousManagerImpl async) {
+                                                boolean hasAsync, AsynchronousManagerImpl async,
+                                                boolean externallyCancelled) {
         CompletableFuture<Void> regular = runRegularStage(event, bucket, sending, needsMain);
         CompletableFuture<Void> processed = regular.thenCompose(ignored -> {
+            if (externallyCancelled) event.setCancelled(true);
             if (event.isCancelled() || !hasAsync || async == null) {
                 return CompletableFuture.completedFuture(null);
             }
@@ -545,9 +574,17 @@ public class PacketManagerImpl implements ProtocolManager, ListenerManager {
                 errorReporter.reportDetailed(this,
                         "Deferred packet processing failed for " + event.getPacketType(), unwrap(error));
             }
+            if (externallyCancelled) event.setCancelled(true);
             if (!event.isCancelled()) transmitDeferred(event);
             return null;
         });
+    }
+
+    private static void cleanUpHeld(ProtocolPacketEvent heldEvent) {
+        if (heldEvent != null) {
+            try { heldEvent.cleanUp(); }
+            catch (Throwable ignored) { }
+        }
     }
 
     private CompletableFuture<Void> runRegularStage(PacketEvent event, PacketListener[] bucket,
