@@ -99,9 +99,12 @@ scan covers 428 upstream production classes and reports:
 - `descriptor_mismatches=0`
 - `class_header_mismatches=37` (inheritance/modifier differences still require behavior review)
 
-This is an implementation/ABI result, not a version certification. Minecraft versions, pre-login
-flows, and the Leaf/MCSV deployment remain live-test pending until a real server and client pass
-the matrix in `compatibility/packetevents-version-matrix.properties`.
+This is an implementation/ABI result, not a universal version certification. The 1.0.4 release
+has additionally been live-tested on Leaf 1.21.11 + Java 25 + PacketEvents 2.13.0 with burst login
+loads up to 50 clients. A 25-client validation completed 25/25 with zero client errors and ~20 TPS;
+during the 50-client run P2P produced no synchronous-listener timeout, Netty ref-count, or watchdog
+freeze errors. Broader Minecraft-version coverage still follows the matrix in
+`compatibility/packetevents-version-matrix.properties`.
 
 ## What is implemented
 
@@ -129,7 +132,11 @@ the matrix in `compatibility/packetevents-version-matrix.properties`.
   `hasStructuredAccess()` and runtime capability detection first.
 
 Dispatch indexes listeners by packet type, so a plugin listening for one packet does not add
-per-listener work to every other packet on the server.
+per-listener work to every other packet on the server. Since 1.0.4, packet-thread dispatch is
+non-blocking: inbound listeners follow ProtocolLib's direction-sensitive threading contract and
+thread hops use ordered continuations instead of waiting on Netty event-loop threads.
+
+See [CHANGELOG.md](CHANGELOG.md) for release-by-release details.
 
 ## Known differences from real ProtocolLib
 

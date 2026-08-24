@@ -1,0 +1,48 @@
+# Changelog
+
+All notable changes to ProtocolLib2PacketEvents (P2P) are documented here.
+
+## [1.0.4] - 2026-08-24
+
+### Fixed
+
+- Fixed `LOGIN.CLIENT.LOGIN_START` compatibility for plugins that read a ProtocolLib `WrappedGameProfile`/`UserProfile` at index `0` (notably FastLogin-style listeners). P2P now exposes a synthetic profile view backed by PacketEvents' login username and UUID fields.
+- Removed packet-thread blocking from the ProtocolLib bridge. Netty event-loop threads no longer wait on Bukkit/main-thread listeners through `CountDownLatch.await(...)` or `Future.get(...)`.
+- Corrected ProtocolLib threading semantics by direction:
+  - inbound/client packets stay on the network thread by default and only hop to the main thread when `ListenerOptions.SYNC` requests it;
+  - outbound/server packets preserve main-thread behavior unless `ListenerOptions.ASYNC` opts out.
+- Added ordered, per-player deferred continuations so packets that must cross thread boundaries retain ordering without blocking the network thread.
+- Fixed deferred PacketEvents buffer lifetime handling. Retained event buffers now transfer ownership to Netty correctly, eliminating `IllegalReferenceCountException: refCnt: 0` seen during burst joins.
+- Prevented recursive-map update races when a deferred continuation completes synchronously.
+
+### Performance
+
+- Added packet-type listener indexes so packets with no matching ProtocolLib listeners return on the hot path without global listener scans or unnecessary `PacketContainer` decoding.
+- Collapsed synchronous dispatch for a packet into one continuation instead of scheduling one Bukkit task per listener.
+- Converted asynchronous processing to `CompletableFuture` continuation flow rather than blocking callers while worker tasks complete.
+
+### Validation
+
+- `mvn test` passes, including new concurrency/threading regression coverage.
+- Live-tested on Leaf 1.21.11 + Java 25 + PacketEvents 2.13.0.
+- 25-client burst: **25/25 spawned, 0 client errors**, TPS remained ~20.
+- 50-client burst: P2P remained free of synchronous-listener timeouts, Netty ref-count errors, and watchdog freezes; the remaining failed joins were isolated to the server's authentication/Mojang-profile pipeline rather than P2P.
+- During the validated runs, the server log contained **0** occurrences of:
+  - `Synchronous packet listener timed out`
+  - `IllegalReferenceCountException`
+  - watchdog `has not responded`
+
+### Notes
+
+- P2P continues to advertise ProtocolLib API compatibility version `5.4.0` in `plugin.yml`; the P2P release version is `1.0.4` and is also exposed as `p2p-version`.
+- FastLogin is not required for P2P itself. Authentication architecture and Mojang API rate limiting are outside this release's scope.
+
+## [1.0.3] - 2026-08-24
+
+### Fixed
+
+- Added the LOGIN_START `GameProfile` compatibility view used as the baseline for the 1.0.4 dispatcher work.
+
+## [1.0.2]
+
+- Previous public release.
