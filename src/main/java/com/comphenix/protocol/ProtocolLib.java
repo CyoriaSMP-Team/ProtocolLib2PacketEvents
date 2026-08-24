@@ -109,7 +109,7 @@ public class ProtocolLib extends JavaPlugin implements Listener {
         if (getCommand("filter") != null) getCommand("filter").setExecutor(commandFilter);
         if (getCommand("packetlog") != null) getCommand("packetlog").setExecutor(new PacketLogging(this, protocolManager));
 
-        this.internalListener = new PacketListenerAbstract(PacketListenerPriority.NORMAL) {
+        this.internalListener = new PacketListenerAbstract(PacketListenerPriority.MONITOR) {
             @Override
             public void onPacketReceive(PacketReceiveEvent event) {
                 protocolManager.dispatchReceive(event);

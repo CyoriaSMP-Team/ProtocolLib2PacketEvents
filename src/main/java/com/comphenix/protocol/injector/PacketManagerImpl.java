@@ -22,6 +22,7 @@ package com.comphenix.protocol.injector;
 import com.comphenix.protocol.PacketType;
 import com.comphenix.protocol.AsynchronousManager;
 import com.comphenix.protocol.ProtocolManager;
+import com.comphenix.protocol.ProtocolLibrary;
 import com.comphenix.protocol.error.ErrorReporter;
 import com.comphenix.protocol.internal.BackendCoordinator;
 import com.comphenix.protocol.internal.PacketNetworkProcessor;
@@ -46,7 +47,6 @@ import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.Bukkit;
-import org.bukkit.scheduler.BukkitTask;
 import com.comphenix.protocol.injector.temporary.TemporaryPlayerAdapter;
 
 import java.util.ArrayList;
@@ -58,9 +58,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Fans PacketEvents' single event stream out to every registered ProtocolLib
@@ -87,6 +85,7 @@ public class PacketManagerImpl implements ProtocolManager, ListenerManager {
 
     /** Set once the async manager exists; dispatch hands it a copy of each handled event. */
     private volatile AsynchronousManagerImpl asynchronousManager;
+    private final java.util.concurrent.ConcurrentHashMap<DeferredKey, CompletableFuture<Void>> deferredTails = new java.util.concurrent.ConcurrentHashMap<>();
     private volatile boolean closed;
 
     public PacketManagerImpl(ErrorReporter errorReporter) {
@@ -95,11 +94,6 @@ public class PacketManagerImpl implements ProtocolManager, ListenerManager {
 
     public void setAsynchronousManager(AsynchronousManagerImpl asynchronousManager) {
         this.asynchronousManager = asynchronousManager;
-        if (asynchronousManager != null) {
-            for (PacketListener listener : listeners) {
-                registerIfAsync(listener);
-            }
-        }
     }
 
     @Override
@@ -110,14 +104,12 @@ public class PacketManagerImpl implements ProtocolManager, ListenerManager {
     @Override
     public void addPacketListener(PacketListener listener) {
         listeners.addIfAbsent(listener);
-        registerIfAsync(listener);
         rebuildIndex();
     }
 
     @Override
     public void removePacketListener(PacketListener listener) {
         if (listeners.remove(listener)) {
-            unregisterIfAsync(listener);
             rebuildIndex();
         }
     }
@@ -128,7 +120,6 @@ public class PacketManagerImpl implements ProtocolManager, ListenerManager {
         for (PacketListener listener : listeners) {
             if (plugin.equals(listener.getPlugin()) && listeners.remove(listener)) {
                 removed.add(listener);
-                unregisterIfAsync(listener);
             }
         }
         if (!removed.isEmpty()) {
@@ -222,106 +213,78 @@ public class PacketManagerImpl implements ProtocolManager, ListenerManager {
     @Override
     public void sendServerPacket(Player receiver, PacketContainer packet,
                                  NetworkMarker marker, boolean filters) {
+        if (receiver == null || packet == null) return;
         PacketEvent event = PacketEvent.fromServer(this, packet, marker, receiver);
-        if (filters) {
-            PacketListener[] bucket = sendingIndex.get(packet.getType());
-            if (bucket != null) {
-                for (PacketListener listener : bucket) {
-                    invokeListener(listener, event, true);
-                }
-            }
-        }
-        AsynchronousManagerImpl async = asynchronousManager;
-        if (!event.isCancelled() && async != null && async.hasAsynchronousListeners(event)) {
-            async.processAndWait(event);
-        }
-        if (event.isCancelled()) {
-            return;
-        }
-        if (!event.getNetworkMarker().getOutputHandlers().isEmpty()) {
-            Object buffer = packet.serializeToBuffer();
-            if (buffer == null) {
-                throw new IllegalStateException("Cannot apply output handlers without a serialized buffer");
-            }
-            byte[] bytes = com.github.retrooper.packetevents.netty.buffer.ByteBufHelper.copyBytes(buffer);
-            for (var handler : event.getNetworkMarker().getOutputHandlers()) {
-                bytes = handler.handle(event, bytes);
-                if (bytes == null) throw new IllegalStateException("PacketOutputHandler returned null");
-            }
-            com.comphenix.protocol.internal.DirectNettyBackend.sendWire(receiver, packet.getId(), bytes);
-        } else {
-            // The listeners above already ran.  Passing filters=true here would
-            // re-enter PacketEvents and dispatch the same ProtocolLib event twice.
-            backend.send(receiver, packet, false);
-        }
-        PacketNetworkProcessor.complete(event, this);
+        PacketListener[] bucket = filters ? listenersFor(packet.getType(), true) : EMPTY_LISTENERS;
+        dispatchProgrammatic(event, bucket, true, filters);
     }
 
-    /** Direct/NMS packets do not pass through PacketEvents' event manager, so fan out the
-     * ProtocolLib listeners here before writing them to the channel. */
+    /** Direct/NMS packets do not pass through PacketEvents' event manager. */
     private void sendDirectWithFilters(Player receiver, PacketContainer packet) {
         if (packet == null) throw new IllegalArgumentException("packet cannot be null");
         PacketEvent event = PacketEvent.fromServer(this, packet,
                 new NetworkMarker(ConnectionSide.SERVER_SIDE, packet.getType()), receiver);
-        PacketListener[] bucket = sendingIndex.get(packet.getType());
-        if (bucket != null) {
-            for (PacketListener listener : bucket) {
-                invokeListener(listener, event, true);
-            }
-        }
-        AsynchronousManagerImpl async = asynchronousManager;
-        if (!event.isCancelled() && async != null && async.hasAsynchronousListeners(event)) {
-            async.processAndWait(event);
-        }
-        if (event.isCancelled()) return;
-
-        if (!event.getNetworkMarker().getOutputHandlers().isEmpty()) {
-            Object raw = packet.serializeToBuffer();
-            if (raw == null) throw new IllegalStateException("No raw buffer is available for output handlers on " + packet.getType());
-            byte[] bytes = com.github.retrooper.packetevents.netty.buffer.ByteBufHelper.copyBytes(raw);
-            for (var handler : event.getNetworkMarker().getOutputHandlers()) {
-                bytes = handler.handle(event, bytes);
-                if (bytes == null) throw new IllegalStateException("PacketOutputHandler returned null");
-            }
-            com.comphenix.protocol.internal.DirectNettyBackend.sendWire(receiver, packet.getId(), bytes);
-        } else {
-            backend.send(receiver, packet, false);
-        }
-        PacketNetworkProcessor.complete(event, this);
+        dispatchProgrammatic(event, listenersFor(packet.getType(), true), true, true);
     }
 
     @Override
     public void receiveClientPacket(Player sender, PacketContainer packet, boolean filters) {
+        if (sender == null || packet == null) return;
         if (filters && backend.backendFor(packet) instanceof com.comphenix.protocol.internal.DirectPacketBackend) {
             receiveDirectWithFilters(sender, packet);
-        } else {
-            backend.receive(sender, packet, filters);
+            return;
         }
+        if (!filters) {
+            backend.receive(sender, packet, false);
+            return;
+        }
+        PacketEvent event = PacketEvent.fromClient(this, packet,
+                new NetworkMarker(ConnectionSide.CLIENT_SIDE, packet.getType()), sender);
+        dispatchProgrammatic(event, listenersFor(packet.getType(), false), false, true);
     }
 
     @Override
     public void receiveClientPacket(Player sender, PacketContainer packet,
                                     NetworkMarker marker, boolean filters) {
-        receiveClientPacket(sender, packet, filters);
+        if (sender == null || packet == null) return;
+        if (!filters) {
+            backend.receive(sender, packet, false);
+            return;
+        }
+        PacketEvent event = PacketEvent.fromClient(this, packet,
+                marker == null ? new NetworkMarker(ConnectionSide.CLIENT_SIDE, packet.getType()) : marker, sender);
+        dispatchProgrammatic(event, listenersFor(packet.getType(), false), false, true);
     }
 
     private void receiveDirectWithFilters(Player sender, PacketContainer packet) {
         if (packet == null) throw new IllegalArgumentException("packet cannot be null");
         PacketEvent event = PacketEvent.fromClient(this, packet,
                 new NetworkMarker(ConnectionSide.CLIENT_SIDE, packet.getType()), sender);
-        PacketListener[] bucket = receivingIndex.get(packet.getType());
-        if (bucket != null) {
-            for (PacketListener listener : bucket) {
-                invokeListener(listener, event, false);
-            }
+        dispatchProgrammatic(event, listenersFor(packet.getType(), false), false, true);
+    }
+
+    /**
+     * Runs ProtocolLib filters for packets emitted through ProtocolManager itself. If a callback
+     * needs a thread hop or explicit asynchronous processing, the API call returns immediately and
+     * the packet is transmitted by the same per-player continuation queue used by wire events.
+     */
+    private void dispatchProgrammatic(PacketEvent event, PacketListener[] bucket,
+                                      boolean sending, boolean filters) {
+        if (!filters) {
+            transmitDeferred(event);
+            return;
         }
         AsynchronousManagerImpl async = asynchronousManager;
-        if (!event.isCancelled() && async != null && async.hasAsynchronousListeners(event)) {
-            async.processAndWait(event);
+        boolean hasAsync = async != null && async.hasAsynchronousListeners(event);
+        boolean needsMain = needsMainThreadHop(bucket, sending);
+        DeferredKey key = deferredKey(event.getPlayer(), sending);
+        boolean pending = key != null && hasDeferredTail(key);
+        if (needsMain || hasAsync || pending) {
+            enqueueDeferred(key, event, bucket, sending, needsMain, hasAsync, async);
+            return;
         }
-        if (event.isCancelled()) return;
-        backend.receive(sender, packet, false);
-        PacketNetworkProcessor.complete(event, this);
+        invokeBucket(bucket, event, sending);
+        if (!event.isCancelled()) transmitDeferred(event);
     }
 
     @Override
@@ -453,40 +416,50 @@ public class PacketManagerImpl implements ProtocolManager, ListenerManager {
         return dispatchDirect(event, true, true);
     }
 
-    /** Dispatches a raw packet exactly once when the direct Netty fallback owns the packet. */
+    /**
+     * Dispatches a raw packet owned by the direct Netty fallback.
+     *
+     * <p>Raw/unmodelled packets cannot currently be safely held and replayed without re-entering
+     * the fallback injector, so this path deliberately never blocks a Netty worker. Direction-aware
+     * listeners run inline. A listener that asks for a main-thread hop on a raw packet is reported
+     * and still invoked inline rather than stalling the channel.</p>
+     */
     private boolean dispatchDirect(PacketEvent event, boolean sending, boolean complete) {
-        if (event == null || event.getPacket() == null || event.getPacketType() == null) {
-            return true;
-        }
-        PacketListener[] bucket = (sending ? sendingIndex : receivingIndex).get(event.getPacketType());
-        if (bucket != null) {
+        if (event == null || event.getPacket() == null || event.getPacketType() == null) return true;
+        PacketListener[] bucket = listenersFor(event.getPacketType(), sending);
+        if (bucket.length != 0) {
             for (PacketListener listener : bucket) {
-                invokeListener(listener, event, sending);
+                if (requiresMainThread(listener, sending) && !Bukkit.isPrimaryThread()) {
+                    errorReporter.reportWarning(listener,
+                            "Raw packet " + event.getPacketType()
+                                    + " requested a main-thread listener; invoking inline to avoid blocking Netty", null);
+                }
+                invokeListenerDirect(listener, event, sending);
             }
         }
         AsynchronousManagerImpl async = asynchronousManager;
         if (!event.isCancelled() && async != null && async.hasAsynchronousListeners(event)) {
-            async.processAndWait(event);
+            // There is no safe replay token for an unmodelled raw frame. Run the async callback
+            // for observability/compatibility but never hold the channel waiting for it.
+            async.process(event);
         }
-        if (complete && !event.isCancelled()) {
-            PacketNetworkProcessor.complete(event, this);
-        }
+        if (complete && !event.isCancelled()) PacketNetworkProcessor.complete(event, this);
         return !event.isCancelled();
     }
 
     private void dispatch(ProtocolPacketEvent event, Map<PacketType, PacketListener[]> index, boolean sending) {
         PacketType type = PacketType.fromPacketEvents(event.getPacketType());
-        if (type == null) {
-            return;
-        }
+        if (type == null) return;
+
         PacketListener[] bucket = index.get(type);
-        AsynchronousManagerImpl async = this.asynchronousManager;
-        boolean anyAsync = async != null && !async.getAsyncHandlers().isEmpty();
-        if ((bucket == null || bucket.length == 0) && !anyAsync) {
-            // Nothing is listening: skip decoding entirely. Building a PacketContainer parses
-            // the packet, which is far too expensive to do for every packet on the server.
+        if (bucket == null) bucket = EMPTY_LISTENERS;
+        AsynchronousManagerImpl async = asynchronousManager;
+        boolean hasAsync = async != null && async.hasAsynchronousListeners(type, sending);
+        if (bucket.length == 0 && !hasAsync) {
+            // Hot path: do not even allocate/decode a PacketContainer when nobody cares.
             return;
         }
+
         Player player = event.getPlayer() instanceof Player existing
                 ? existing : TemporaryPlayerAdapter.create(event.getUser());
         if (player == null) return;
@@ -500,46 +473,145 @@ public class PacketManagerImpl implements ProtocolManager, ListenerManager {
                 : PacketEvent.fromClient(this, container,
                         new NetworkMarker(NetworkMarkerSide.CLIENT.side, type), player);
 
-        if (bucket != null) {
-            for (PacketListener listener : bucket) {
-                if (!shouldRunSynchronously(listener, sending)) {
-                    continue;
-                }
-                try {
-                    invokeListener(listener, packetEvent, sending);
-                } catch (Exception e) {
-                    // invokeListener already reports listener failures. Keep this guard for
-                    // scheduler/runtime failures so one bad plugin cannot break the PE callback.
-                    errorReporter.reportDetailed(listener,
-                            "Error while handling " + (sending ? "sending" : "receiving") + " of " + type, e);
-                }
-            }
-        }
+        // P2P runs at PacketEvents MONITOR priority. Preserve cancellation decisions made by
+        // earlier PacketEvents listeners and allow ProtocolLib listeners to explicitly uncancel.
+        packetEvent.setCancelled(event.isCancelled());
 
-        if (packetEvent.isCancelled()) {
+        DeferredKey key = deferredKey(player, sending);
+        boolean needsMain = needsMainThreadHop(bucket, sending);
+        boolean pending = key != null && hasDeferredTail(key);
+        if (needsMain || hasAsync || pending) {
+            // Logically hold this packet without holding the network callback. The completed
+            // packet is replayed through PacketEvents' silent transport after all P2P work.
             event.setCancelled(true);
+            enqueueDeferred(key, packetEvent, bucket, sending, needsMain, hasAsync, async);
             return;
         }
 
-        // Hold the PacketEvents callback while async listeners finish. This is the bridge's
-        // hold/release point: mutations and cancellation still affect the packet on the wire.
-        if (anyAsync) {
-            async.processAndWait(packetEvent);
-            if (packetEvent.isCancelled()) {
-                event.setCancelled(true);
-                return;
-            }
-        }
+        invokeBucket(bucket, packetEvent, sending);
+        event.setCancelled(packetEvent.isCancelled());
+        if (packetEvent.isCancelled()) return;
 
-        // PacketEvents only rewrites the outgoing buffer from the wrapper when the event is
-        // marked for re-encoding; otherwise EventManager drops the wrapper reference and any
-        // edits a listener made would be silently discarded. Since a listener ran and may have
-        // mutated the packet, force the re-encode here.
-        if (container.hasStructuredAccess()) {
-            event.markForReEncode(true);
-        }
+        if (container.hasStructuredAccess()) event.markForReEncode(true);
         PacketNetworkProcessor.applyOutputHandlers(event, packetEvent);
         PacketNetworkProcessor.complete(packetEvent, this);
+    }
+
+    private DeferredKey deferredKey(Player player, boolean sending) {
+        if (player == null || player.getUniqueId() == null) return null;
+        return new DeferredKey(player.getUniqueId(), sending);
+    }
+
+    private boolean hasDeferredTail(DeferredKey key) {
+        CompletableFuture<Void> tail = deferredTails.get(key);
+        return tail != null && !tail.isDone();
+    }
+
+    private void enqueueDeferred(DeferredKey key, PacketEvent event, PacketListener[] bucket,
+                                 boolean sending, boolean needsMain, boolean hasAsync,
+                                 AsynchronousManagerImpl async) {
+        if (key == null) {
+            // Temporary players should normally still expose a UUID. If one does not, use an
+            // independent continuation instead of ever blocking the packet thread.
+            runDeferred(event, bucket, sending, needsMain, hasAsync, async);
+            return;
+        }
+
+        CompletableFuture<Void> next = deferredTails.compute(key, (ignored, previous) -> {
+            CompletableFuture<Void> base = previous == null
+                    ? CompletableFuture.completedFuture(null)
+                    : previous.handle((value, error) -> null);
+            return base.thenCompose(value ->
+                    runDeferred(event, bucket, sending, needsMain, hasAsync, async));
+        });
+        // Attach cleanup after compute() returns. A continuation can complete synchronously, and
+        // mutating the same ConcurrentHashMap from inside its compute callback is a recursive update.
+        next.whenComplete((value, error) -> deferredTails.remove(key, next));
+    }
+
+    private CompletableFuture<Void> runDeferred(PacketEvent event, PacketListener[] bucket,
+                                                boolean sending, boolean needsMain,
+                                                boolean hasAsync, AsynchronousManagerImpl async) {
+        CompletableFuture<Void> regular = runRegularStage(event, bucket, sending, needsMain);
+        CompletableFuture<Void> processed = regular.thenCompose(ignored -> {
+            if (event.isCancelled() || !hasAsync || async == null) {
+                return CompletableFuture.completedFuture(null);
+            }
+            return async.process(event);
+        });
+        return processed.handle((ignored, error) -> {
+            if (error != null) {
+                event.setCancelled(true);
+                errorReporter.reportDetailed(this,
+                        "Deferred packet processing failed for " + event.getPacketType(), unwrap(error));
+            }
+            if (!event.isCancelled()) transmitDeferred(event);
+            return null;
+        });
+    }
+
+    private CompletableFuture<Void> runRegularStage(PacketEvent event, PacketListener[] bucket,
+                                                    boolean sending, boolean needsMain) {
+        if (!needsMain || Bukkit.isPrimaryThread()) {
+            invokeBucket(bucket, event, sending);
+            return CompletableFuture.completedFuture(null);
+        }
+
+        CompletableFuture<Void> completion = new CompletableFuture<>();
+        try {
+            ProtocolLibrary.getScheduler().runTask(() -> {
+                try {
+                    invokeBucket(bucket, event, sending);
+                    completion.complete(null);
+                } catch (Throwable error) {
+                    completion.completeExceptionally(error);
+                }
+            });
+        } catch (Throwable error) {
+            completion.completeExceptionally(error);
+        }
+        return completion;
+    }
+
+    private void transmitDeferred(PacketEvent event) {
+        Player player = event.getPlayer();
+        PacketContainer packet = event.getPacket();
+        if (player == null || packet == null) return;
+
+        try {
+            NetworkMarker marker = event.getNetworkMarker();
+            if (event.isServerPacket() && marker != null && !marker.getOutputHandlers().isEmpty()) {
+                Object raw = packet.serializeToBuffer();
+                if (raw == null) {
+                    throw new IllegalStateException("No encoded buffer is available for " + event.getPacketType());
+                }
+                byte[] bytes = com.github.retrooper.packetevents.netty.buffer.ByteBufHelper.copyBytes(raw);
+                for (var handler : marker.getOutputHandlers()) {
+                    bytes = handler.handle(event, bytes);
+                    if (bytes == null) throw new IllegalStateException("PacketOutputHandler returned null");
+                }
+                com.comphenix.protocol.internal.DirectNettyBackend.sendWire(player, packet.getId(), bytes);
+            } else if (event.isServerPacket()) {
+                backend.send(player, packet, false);
+            } else {
+                backend.receive(player, packet, false);
+            }
+            if (event.getAsyncMarker() != null) event.getAsyncMarker().markTransmitted();
+            PacketNetworkProcessor.complete(event, this);
+        } catch (Throwable error) {
+            errorReporter.reportDetailed(this,
+                    "Unable to release deferred packet " + event.getPacketType(), error);
+        }
+    }
+
+    private static Throwable unwrap(Throwable error) {
+        Throwable current = error;
+        while ((current instanceof java.util.concurrent.CompletionException
+                || current instanceof java.util.concurrent.ExecutionException)
+                && current.getCause() != null) {
+            current = current.getCause();
+        }
+        return current;
     }
 
     private enum NetworkMarkerSide {
@@ -547,29 +619,14 @@ public class PacketManagerImpl implements ProtocolManager, ListenerManager {
         CLIENT(com.comphenix.protocol.events.ConnectionSide.CLIENT_SIDE);
 
         private final com.comphenix.protocol.events.ConnectionSide side;
-
-        NetworkMarkerSide(com.comphenix.protocol.events.ConnectionSide side) {
-            this.side = side;
-        }
+        NetworkMarkerSide(com.comphenix.protocol.events.ConnectionSide side) { this.side = side; }
     }
 
-    private void registerIfAsync(PacketListener listener) {
-        AsynchronousManagerImpl async = asynchronousManager;
-        if (async == null || listener == null) {
-            return;
-        }
-        if (hasOption(listener, true, ListenerOptions.ASYNC)
-                || hasOption(listener, false, ListenerOptions.ASYNC)) {
-            async.registerAsyncHandler(listener);
-        }
-    }
+    private static final PacketListener[] EMPTY_LISTENERS = new PacketListener[0];
 
-    private void unregisterIfAsync(PacketListener listener) {
-        AsynchronousManagerImpl async = asynchronousManager;
-        if (async == null || listener == null) {
-            return;
-        }
-        async.unregisterAsyncHandler(listener);
+    private PacketListener[] listenersFor(PacketType type, boolean sending) {
+        PacketListener[] bucket = (sending ? sendingIndex : receivingIndex).get(type);
+        return bucket == null ? EMPTY_LISTENERS : bucket;
     }
 
     private static boolean hasOption(PacketListener listener, boolean sending, ListenerOptions option) {
@@ -577,73 +634,38 @@ public class PacketManagerImpl implements ProtocolManager, ListenerManager {
         return whitelist != null && whitelist.getOptions().contains(option);
     }
 
-    private static boolean shouldRunSynchronously(PacketListener listener, boolean sending) {
-        return !hasOption(listener, sending, ListenerOptions.ASYNC);
+    /** ProtocolLib's threading contract is direction-sensitive. */
+    static boolean requiresMainThread(PacketListener listener, boolean sending) {
+        if (sending) {
+            // Server -> client listeners run on the main thread unless ASYNC opts out.
+            return !hasOption(listener, true, ListenerOptions.ASYNC);
+        }
+        // Client -> server listeners run on Netty/async by default; only SYNC opts in.
+        return hasOption(listener, false, ListenerOptions.SYNC);
     }
 
-    /**
-     * Invoke a non-ASYNC ProtocolLib listener on Bukkit's primary thread. PacketEvents invokes
-     * its listeners from a channel/event-loop thread on modern servers, while ProtocolLib's
-     * regular listener contract is synchronous. The latch is intentional: cancellation and
-     * packet mutations must be visible before the PE callback is allowed to continue.
-     */
-    private void invokeListener(PacketListener listener, PacketEvent event, boolean sending) {
-        if (!shouldRunSynchronously(listener, sending)) {
-            return;
+    private static boolean needsMainThreadHop(PacketListener[] bucket, boolean sending) {
+        if (Bukkit.isPrimaryThread()) return false;
+        for (PacketListener listener : bucket) {
+            if (requiresMainThread(listener, sending)) return true;
         }
-        Runnable callback = () -> {
-            try {
-                if (sending) {
-                    listener.onPacketSending(event);
-                } else {
-                    listener.onPacketReceiving(event);
-                }
-            } catch (Throwable error) {
-                errorReporter.reportDetailed(listener,
-                        "Error while handling " + (sending ? "sending" : "receiving")
-                                + " of " + event.getPacketType(), error);
-            }
-        };
+        return false;
+    }
 
-        Plugin plugin = listener.getPlugin();
-        if (Bukkit.isPrimaryThread() || plugin == null || plugin.getServer() == null) {
-            callback.run();
-            return;
-        }
+    private void invokeBucket(PacketListener[] bucket, PacketEvent event, boolean sending) {
+        for (PacketListener listener : bucket) invokeListenerDirect(listener, event, sending);
+    }
 
-        CountDownLatch completed = new CountDownLatch(1);
-        AtomicReference<Throwable> schedulingFailure = new AtomicReference<>();
-        BukkitTask task;
+    private void invokeListenerDirect(PacketListener listener, PacketEvent event, boolean sending) {
         try {
-            task = plugin.getServer().getScheduler().runTask(plugin, () -> {
-                try {
-                    callback.run();
-                } finally {
-                    completed.countDown();
-                }
-            });
+            if (sending) listener.onPacketSending(event);
+            else listener.onPacketReceiving(event);
         } catch (Throwable error) {
-            schedulingFailure.set(error);
-            task = null;
-        }
-        if (schedulingFailure.get() != null) {
-            errorReporter.reportDetailed(listener, "Unable to schedule synchronous packet listener", schedulingFailure.get());
-            return;
-        }
-        try {
-            if (!completed.await(5, TimeUnit.SECONDS)) {
-                if (task != null) {
-                    task.cancel();
-                }
-                errorReporter.reportWarning(listener,
-                        "Synchronous packet listener timed out; packet callback was released", null);
-            }
-        } catch (InterruptedException error) {
-            Thread.currentThread().interrupt();
-            if (task != null) {
-                task.cancel();
-            }
-            errorReporter.reportWarning(listener, "Interrupted while waiting for synchronous packet listener", error);
+            errorReporter.reportDetailed(listener,
+                    "Error while handling " + (sending ? "sending" : "receiving")
+                            + " of " + event.getPacketType(), error);
         }
     }
+
+    private record DeferredKey(java.util.UUID playerId, boolean sending) { }
 }

@@ -34,8 +34,9 @@ import java.util.Collections;
  * blocking work (database lookups, HTTP calls) without stalling the connection. Packets for a
  * given player are processed strictly in order, so a slow listener delays that player's later
  * packets rather than letting them overtake.
- * <p>The PacketEvents bridge holds the callback while the per-player async lane runs, so a
- * listener can still mutate or cancel the shared event before the encoder resumes.</p>
+ * <p>The PacketEvents bridge may logically defer a packet while this manager works, but the
+ * network callback itself is never blocked. The packet is released after asynchronous processing
+ * completes, preserving cancellation and mutation semantics without occupying a Netty worker.</p>
  */
 public interface AsynchronousManager {
 
