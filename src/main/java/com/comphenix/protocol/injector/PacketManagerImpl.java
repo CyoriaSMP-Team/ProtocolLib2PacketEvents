@@ -271,7 +271,7 @@ public class PacketManagerImpl implements ProtocolManager, ListenerManager {
     private void dispatchProgrammatic(PacketEvent event, PacketListener[] bucket,
                                       boolean sending, boolean filters) {
         if (!filters) {
-            transmitDeferred(event);
+            transmitDeferred(event, null);
             return;
         }
         AsynchronousManagerImpl async = asynchronousManager;
@@ -285,7 +285,7 @@ public class PacketManagerImpl implements ProtocolManager, ListenerManager {
             return;
         }
         invokeBucket(bucket, event, sending);
-        if (!event.isCancelled()) transmitDeferred(event);
+        if (!event.isCancelled()) transmitDeferred(event, null);
     }
 
     @Override
@@ -535,7 +535,7 @@ public class PacketManagerImpl implements ProtocolManager, ListenerManager {
         if (key == null) {
             // Temporary players should normally still expose a UUID. If one does not, use an
             // independent continuation instead of ever blocking the packet thread.
-            runDeferred(event, bucket, sending, needsMain, hasAsync, async, externallyCancelled)
+            runDeferred(event, bucket, sending, needsMain, hasAsync, async, heldEvent, externallyCancelled)
                     .whenComplete((value, error) -> cleanUpHeld(heldEvent));
             return;
         }
@@ -546,7 +546,7 @@ public class PacketManagerImpl implements ProtocolManager, ListenerManager {
                     : previous.handle((value, error) -> null);
             return base.thenCompose(value ->
                     runDeferred(event, bucket, sending, needsMain, hasAsync, async,
-                            externallyCancelled));
+                            heldEvent, externallyCancelled));
         });
         // Attach cleanup after compute() returns. A continuation can complete synchronously, and
         // mutating the same ConcurrentHashMap from inside its compute callback is a recursive update.
@@ -559,6 +559,7 @@ public class PacketManagerImpl implements ProtocolManager, ListenerManager {
     private CompletableFuture<Void> runDeferred(PacketEvent event, PacketListener[] bucket,
                                                 boolean sending, boolean needsMain,
                                                 boolean hasAsync, AsynchronousManagerImpl async,
+                                                ProtocolPacketEvent heldEvent,
                                                 boolean externallyCancelled) {
         CompletableFuture<Void> regular = runRegularStage(event, bucket, sending, needsMain);
         CompletableFuture<Void> processed = regular.thenCompose(ignored -> {
@@ -575,15 +576,19 @@ public class PacketManagerImpl implements ProtocolManager, ListenerManager {
                         "Deferred packet processing failed for " + event.getPacketType(), unwrap(error));
             }
             if (externallyCancelled) event.setCancelled(true);
-            if (!event.isCancelled()) transmitDeferred(event);
+            if (!event.isCancelled()) transmitDeferred(event, heldEvent);
             return null;
         });
     }
 
     private static void cleanUpHeld(ProtocolPacketEvent heldEvent) {
         if (heldEvent != null) {
-            try { heldEvent.cleanUp(); }
-            catch (Throwable ignored) { }
+            try {
+                // When transmitDeferred hands this exact retained buffer to PacketEvents/Netty,
+                // it clears heldEvent.byteBuf to mark ownership transferred. Do not release it
+                // here a second time.
+                if (heldEvent.getByteBuf() != null) heldEvent.cleanUp();
+            } catch (Throwable ignored) { }
         }
     }
 
@@ -610,7 +615,7 @@ public class PacketManagerImpl implements ProtocolManager, ListenerManager {
         return completion;
     }
 
-    private void transmitDeferred(PacketEvent event) {
+    private void transmitDeferred(PacketEvent event, ProtocolPacketEvent heldEvent) {
         Player player = event.getPlayer();
         PacketContainer packet = event.getPacket();
         if (player == null || packet == null) return;
@@ -629,15 +634,40 @@ public class PacketManagerImpl implements ProtocolManager, ListenerManager {
                 }
                 com.comphenix.protocol.internal.DirectNettyBackend.sendWire(player, packet.getId(), bytes);
             } else if (event.isServerPacket()) {
-                backend.send(player, packet, false);
+                transferStructuredBufferOwnership(heldEvent, packet, true, player);
             } else {
-                backend.receive(player, packet, false);
+                transferStructuredBufferOwnership(heldEvent, packet, false, player);
             }
             if (event.getAsyncMarker() != null) event.getAsyncMarker().markTransmitted();
             PacketNetworkProcessor.complete(event, this);
         } catch (Throwable error) {
             errorReporter.reportDetailed(this,
                     "Unable to release deferred packet " + event.getPacketType(), error);
+        }
+    }
+
+
+    /**
+     * PacketEvents' wrapper transport synchronously transforms the wrapper into a ByteBuf and
+     * sets wrapper.buffer to null before handing that ByteBuf to Netty. If the wrapper was
+     * decoded from our retained event clone, wrapper.buffer and heldEvent.byteBuf are the exact
+     * same reference. After the call returns Netty owns that reference, so the clone must not
+     * release it again in cleanUp().
+     */
+    private void transferStructuredBufferOwnership(ProtocolPacketEvent heldEvent,
+                                                   PacketContainer packet, boolean sending,
+                                                   Player player) {
+        com.github.retrooper.packetevents.wrapper.PacketWrapper<?> wrapper = packet.getPacketWrapper();
+        Object heldBuffer = heldEvent == null ? null : heldEvent.getByteBuf();
+        Object wrapperBuffer = wrapper == null ? null : wrapper.getBuffer();
+        boolean sharedRetainedBuffer = heldBuffer != null && heldBuffer == wrapperBuffer;
+
+        if (sending) backend.send(player, packet, false);
+        else backend.receive(player, packet, false);
+
+        // transformWrappers() clears wrapper.buffer after transferring the ByteBuf to Netty.
+        if (sharedRetainedBuffer && wrapper.getBuffer() == null) {
+            heldEvent.setByteBuf(null);
         }
     }
 
