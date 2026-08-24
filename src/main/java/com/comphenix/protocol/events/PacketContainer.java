@@ -36,7 +36,9 @@ import com.github.retrooper.packetevents.event.PacketSendEvent;
 import com.github.retrooper.packetevents.manager.server.ServerVersion;
 import com.github.retrooper.packetevents.protocol.item.ItemStack;
 import com.github.retrooper.packetevents.protocol.player.ClientVersion;
+import com.github.retrooper.packetevents.protocol.player.UserProfile;
 import com.github.retrooper.packetevents.wrapper.PacketTypeData;
+import com.github.retrooper.packetevents.wrapper.login.client.WrapperLoginClientLoginStart;
 import com.github.retrooper.packetevents.wrapper.PacketWrapper;
 import com.github.retrooper.packetevents.protocol.entity.type.EntityType;
 import io.github.retrooper.packetevents.util.SpigotConversionUtil;
@@ -78,6 +80,15 @@ public class PacketContainer extends AbstractStructure implements java.io.Serial
     private final PacketWrapper<?> handle;
     private final Object nativeHandle;
     private final StructureModifier<Object> suppliedModifier;
+
+    /** Synthetic ProtocolLib field model for PacketEvents LOGIN_START packets. */
+    private static final class LoginStartProfileView {
+        private UserProfile profile;
+
+        private LoginStartProfileView(UserProfile profile) {
+            this.profile = profile;
+        }
+    }
 
     public PacketContainer(PacketType type, PacketReceiveEvent event) {
         this.type = type;
@@ -287,6 +298,20 @@ public class PacketContainer extends AbstractStructure implements java.io.Serial
 
     /** Player profile fields. */
     public StructureModifier<WrappedGameProfile> getGameProfiles() {
+        // PacketEvents models LOGIN_START as separate username + optional UUID fields,
+        // while ProtocolLib exposes the same logical data as a GameProfile. FastLogin and
+        // other ProtocolLib consumers therefore expect getGameProfiles().read(0) to exist.
+        // Provide a tiny compatibility view for this packet instead of pretending the
+        // PacketEvents wrapper physically contains a UserProfile field.
+        if (handle instanceof WrapperLoginClientLoginStart loginStart) {
+            UserProfile profile = new UserProfile(
+                    loginStart.getPlayerUUID().orElse(null),
+                    loginStart.getUsername());
+            return new StructureModifier<>(
+                    new LoginStartProfileView(profile),
+                    UserProfile.class,
+                    WrappedGameProfile.getConverter());
+        }
         return convert(WrappedGameProfile.getConverter());
     }
 

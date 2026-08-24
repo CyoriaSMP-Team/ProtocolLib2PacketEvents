@@ -6,19 +6,25 @@ package com.comphenix.protocol;
 import com.comphenix.protocol.async.AsyncMarker;
 import com.comphenix.protocol.events.ConnectionSide;
 import com.comphenix.protocol.events.NetworkMarker;
+import com.comphenix.protocol.events.PacketContainer;
 import com.comphenix.protocol.injector.netty.Injector;
 import com.comphenix.protocol.injector.netty.WirePacket;
+import com.comphenix.protocol.reflect.ObjectAllocator;
+import com.comphenix.protocol.reflect.StructureModifier;
 import com.comphenix.protocol.injector.temporary.TemporaryPlayer;
 import com.comphenix.protocol.injector.temporary.TemporaryPlayerFactory;
 import com.comphenix.protocol.wrappers.EnumWrappers;
 import com.comphenix.protocol.wrappers.WrappedDataWatcher;
+import com.comphenix.protocol.wrappers.WrappedGameProfile;
 import com.comphenix.protocol.wrappers.nbt.NbtCompound;
 import com.comphenix.protocol.wrappers.nbt.NbtFactory;
 import org.bukkit.entity.Player;
 import com.github.retrooper.packetevents.PacketEvents;
+import com.github.retrooper.packetevents.wrapper.login.client.WrapperLoginClientLoginStart;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
+import java.util.UUID;
 import java.lang.reflect.Proxy;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -85,6 +91,31 @@ class CompatibilityCoreTest {
     void packetTypeHoldersExposeEnumValues() {
         assertTrue(PacketType.Play.Server.getInstance().values().contains(PacketType.Play.Server.SPAWN_ENTITY));
         assertTrue(PacketType.Play.Client.getInstance().values().contains(PacketType.Play.Client.TAB_COMPLETE));
+    }
+
+    @Test
+    void loginStartExposesProtocolLibGameProfileView() {
+        UUID uuid = UUID.randomUUID();
+        WrapperLoginClientLoginStart loginStart = ObjectAllocator.allocate(WrapperLoginClientLoginStart.class);
+        new StructureModifier<String>(loginStart, String.class).write(0, "FastLoginUser");
+        new StructureModifier<UUID>(loginStart, UUID.class).write(0, uuid);
+        PacketContainer packet = new PacketContainer(PacketType.Login.Client.START, loginStart);
+
+        assertEquals(1, packet.getGameProfiles().size());
+        WrappedGameProfile profile = packet.getGameProfiles().read(0);
+        assertEquals("FastLoginUser", profile.getName());
+        assertEquals(uuid, profile.getUUID());
+    }
+
+    @Test
+    void loginStartProfileViewAllowsMissingUuid() {
+        WrapperLoginClientLoginStart loginStart = ObjectAllocator.allocate(WrapperLoginClientLoginStart.class);
+        new StructureModifier<String>(loginStart, String.class).write(0, "LegacyUser");
+        PacketContainer packet = new PacketContainer(PacketType.Login.Client.START, loginStart);
+
+        WrappedGameProfile profile = packet.getGameProfiles().read(0);
+        assertEquals("LegacyUser", profile.getName());
+        assertNull(profile.getUUID());
     }
 
     @Test
