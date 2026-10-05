@@ -124,7 +124,8 @@ class CompatibilityCoreTest {
     @Test
     void chunkDataExposesProtocolLibChunkCoordinatesAsIntegers() {
         Column column = new Column(123, -456, true, new BaseChunk[0], null);
-        WrapperPlayServerChunkData chunkData = new WrapperPlayServerChunkData(column);
+        WrapperPlayServerChunkData chunkData = ObjectAllocator.allocate(WrapperPlayServerChunkData.class);
+        new StructureModifier<Column>(chunkData, Column.class).write(0, column);
         PacketContainer packet = new PacketContainer(PacketType.Play.Server.MAP_CHUNK, chunkData);
 
         assertEquals(2, packet.getIntegers().size());
