@@ -20,7 +20,10 @@ import com.comphenix.protocol.wrappers.nbt.NbtCompound;
 import com.comphenix.protocol.wrappers.nbt.NbtFactory;
 import org.bukkit.entity.Player;
 import com.github.retrooper.packetevents.PacketEvents;
+import com.github.retrooper.packetevents.protocol.world.chunk.BaseChunk;
+import com.github.retrooper.packetevents.protocol.world.chunk.Column;
 import com.github.retrooper.packetevents.wrapper.login.client.WrapperLoginClientLoginStart;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerChunkData;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
@@ -116,6 +119,17 @@ class CompatibilityCoreTest {
         WrappedGameProfile profile = packet.getGameProfiles().read(0);
         assertEquals("LegacyUser", profile.getName());
         assertNull(profile.getUUID());
+    }
+
+    @Test
+    void chunkDataExposesProtocolLibChunkCoordinatesAsIntegers() {
+        Column column = new Column(123, -456, true, new BaseChunk[0], null);
+        WrapperPlayServerChunkData chunkData = new WrapperPlayServerChunkData(column);
+        PacketContainer packet = new PacketContainer(PacketType.Play.Server.MAP_CHUNK, chunkData);
+
+        assertEquals(2, packet.getIntegers().size());
+        assertEquals(123, packet.getIntegers().read(0));
+        assertEquals(-456, packet.getIntegers().read(1));
     }
 
     @Test
