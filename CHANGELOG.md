@@ -2,6 +2,18 @@
 
 All notable changes to ProtocolLib2PacketEvents (P2P) are documented here.
 
+## [1.0.5] - 2026-10-05
+
+### Fixed
+
+- Fixed ProtocolLib `MAP_CHUNK` / PacketEvents `CHUNK_DATA` integer field compatibility. `PacketContainer#getIntegers()` now exposes the chunk X and Z coordinates from PacketEvents' nested `Column` object at indices `0` and `1`, matching ProtocolLib behavior used by QuickShop-Hikari and other ProtocolLib consumers.
+- Added a regression test covering `getIntegers().read(0)` and `read(1)` on chunk data packets.
+
+### Notes
+
+- This fixes the `IndexOutOfBoundsException: No field of type int at index 0` seen when QuickShop-Hikari listens for outgoing chunk data through P2P.
+- The compatibility view targets decoded/intercepted chunk packets whose PacketEvents wrapper already contains a `Column`; packet construction semantics outside that path are unchanged.
+
 ## [1.0.4] - 2026-08-24
 
 ### Fixed
