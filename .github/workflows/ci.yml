@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Build and test
+        run: mvn -B package
+
+      - name: Upload plugin jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: ProtocolLib2PacketEvents-build
+          path: target/ProtocolLib2PacketEvents-*.jar
+          if-no-files-found: error
