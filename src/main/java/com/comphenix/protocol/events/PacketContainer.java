@@ -39,6 +39,7 @@ import com.github.retrooper.packetevents.protocol.player.ClientVersion;
 import com.github.retrooper.packetevents.protocol.player.UserProfile;
 import com.github.retrooper.packetevents.wrapper.PacketTypeData;
 import com.github.retrooper.packetevents.wrapper.login.client.WrapperLoginClientLoginStart;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerChunkData;
 import com.github.retrooper.packetevents.wrapper.PacketWrapper;
 import com.github.retrooper.packetevents.protocol.entity.type.EntityType;
 import io.github.retrooper.packetevents.util.SpigotConversionUtil;
@@ -210,6 +211,13 @@ public class PacketContainer extends AbstractStructure implements java.io.Serial
     }
 
     public StructureModifier<Integer> getIntegers() {
+        // ProtocolLib exposes MAP_CHUNK / CHUNK_DATA chunk X and Z as the first two
+        // integer fields. PacketEvents stores those coordinates inside Column instead of
+        // directly on WrapperPlayServerChunkData, so expose the nested object as the
+        // ProtocolLib-compatible integer view for intercepted chunk packets.
+        if (handle instanceof WrapperPlayServerChunkData chunkData && chunkData.getColumn() != null) {
+            return new StructureModifier<>(chunkData.getColumn(), int.class);
+        }
         return new StructureModifier<>(structureTarget(), int.class);
     }
 
