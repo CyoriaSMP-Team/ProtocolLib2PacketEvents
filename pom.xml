@@ -5,7 +5,7 @@
 
     <groupId>com.comphenix.protocol</groupId>
     <artifactId>ProtocolLib2PacketEvents</artifactId>
-    <version>1.0.5</version>
+    <version>1.0.6</version>
     <packaging>jar</packaging>
 
     <name>ProtocolLib2PacketEvents</name>

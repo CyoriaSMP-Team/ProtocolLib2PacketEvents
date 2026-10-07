@@ -30,6 +30,7 @@ import com.comphenix.protocol.wrappers.WrappedDataWatcher;
 import com.comphenix.protocol.wrappers.WrappedGameProfile;
 import com.comphenix.protocol.wrappers.ChunkCoordIntPair;
 import com.comphenix.protocol.wrappers.WrappedDataValue;
+import com.comphenix.protocol.utility.MinecraftReflection;
 import com.github.retrooper.packetevents.PacketEvents;
 import com.github.retrooper.packetevents.event.PacketReceiveEvent;
 import com.github.retrooper.packetevents.event.PacketSendEvent;
@@ -40,14 +41,17 @@ import com.github.retrooper.packetevents.protocol.player.UserProfile;
 import com.github.retrooper.packetevents.wrapper.PacketTypeData;
 import com.github.retrooper.packetevents.wrapper.login.client.WrapperLoginClientLoginStart;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerChunkData;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerUnloadChunk;
 import com.github.retrooper.packetevents.wrapper.PacketWrapper;
 import com.github.retrooper.packetevents.protocol.entity.type.EntityType;
 import io.github.retrooper.packetevents.util.SpigotConversionUtil;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
+import java.util.Collections;
 import java.util.Map;
 import java.util.Optional;
+import java.util.WeakHashMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.List;
 import java.util.UUID;
@@ -88,6 +92,321 @@ public class PacketContainer extends AbstractStructure implements java.io.Serial
 
         private LoginStartProfileView(UserProfile profile) {
             this.profile = profile;
+        }
+    }
+
+    /** Synthetic field target for the packed long exposed by UNLOAD_CHUNK. */
+    private static final class UnloadChunkKeyView {
+        private long chunkKey;
+
+        private UnloadChunkKeyView(long chunkKey) {
+            this.chunkKey = chunkKey;
+        }
+    }
+
+    /**
+     * A bounded translation from a synthetic ProtocolLib field to a PacketEvents wrapper.
+     * Derived modifiers retain this projection only when they still select its backing type.
+     */
+    private enum LiveFieldProjection {
+        UNLOAD_CHUNK_KEY(WrapperPlayServerUnloadChunk.class, long.class) {
+            @Override
+            Object createView(Object wrapper) {
+                return new UnloadChunkKeyView(chunkKey((WrapperPlayServerUnloadChunk) wrapper));
+            }
+
+            @Override
+            Object read(Object wrapper) {
+                return chunkKey((WrapperPlayServerUnloadChunk) wrapper);
+            }
+
+            @Override
+            void write(Object wrapper, Object value) {
+                if (!(value instanceof Long key)) {
+                    throw new IllegalArgumentException("UNLOAD_CHUNK key projection requires a non-null long");
+                }
+                WrapperPlayServerUnloadChunk unloadChunk = (WrapperPlayServerUnloadChunk) wrapper;
+                unloadChunk.setChunkX(PacketWrapper.getChunkX(key));
+                unloadChunk.setChunkZ(PacketWrapper.getChunkZ(key));
+            }
+
+            @Override
+            void updateView(Object view, Object value) {
+                ((UnloadChunkKeyView) view).chunkKey = (Long) value;
+            }
+
+            @Override
+            Object defaultValue() {
+                return 0L;
+            }
+
+        },
+        LOGIN_START_PROFILE(WrapperLoginClientLoginStart.class, UserProfile.class) {
+            @Override
+            Object createView(Object wrapper) {
+                return new LoginStartProfileView(profile((WrapperLoginClientLoginStart) wrapper));
+            }
+
+            @Override
+            Object read(Object wrapper) {
+                return profile((WrapperLoginClientLoginStart) wrapper);
+            }
+
+            @Override
+            void write(Object wrapper, Object value) {
+                UserProfile updated = (UserProfile) value;
+                WrapperLoginClientLoginStart loginStart = (WrapperLoginClientLoginStart) wrapper;
+                loginStart.setUsername(updated == null ? null : updated.getName());
+                loginStart.setPlayerUUID(updated == null ? null : updated.getUUID());
+            }
+
+            @Override
+            void updateView(Object view, Object value) {
+                ((LoginStartProfileView) view).profile = (UserProfile) value;
+            }
+
+            @Override
+            Object defaultValue() {
+                return null;
+            }
+
+        };
+
+        private final Class<?> wrapperType;
+        private final Class<?> fieldType;
+
+        LiveFieldProjection(Class<?> wrapperType, Class<?> fieldType) {
+            this.wrapperType = wrapperType;
+            this.fieldType = fieldType;
+        }
+
+        abstract Object createView(Object wrapper);
+
+        abstract Object read(Object wrapper);
+
+        abstract void write(Object wrapper, Object value);
+
+        abstract void updateView(Object view, Object value);
+
+        abstract Object defaultValue();
+
+        boolean supportsFieldType(Class<?> requestedType) {
+            return sameFieldType(fieldType, requestedType);
+        }
+
+        boolean supportsWrapper(Object target) {
+            return target != null && wrapperType.isInstance(target);
+        }
+    }
+
+    /** Associates synthetic targets with their live wrappers without adding reflected fields. */
+    private static final Map<Object, ProjectionTargetBinding> PROJECTION_TARGETS =
+            Collections.synchronizedMap(new WeakHashMap<>());
+
+    private static final class ProjectionTargetBinding {
+        private final LiveFieldProjection projection;
+        private final Object wrapper;
+
+        private ProjectionTargetBinding(LiveFieldProjection projection, Object wrapper) {
+            this.projection = projection;
+            this.wrapper = wrapper;
+        }
+    }
+
+    private static Object createProjectionTarget(LiveFieldProjection projection, Object wrapper) {
+        Object target = projection.createView(wrapper);
+        PROJECTION_TARGETS.put(target, new ProjectionTargetBinding(projection, wrapper));
+        return target;
+    }
+
+    private static ProjectionTargetBinding getProjectionTargetBinding(Object target) {
+        return target == null ? null : PROJECTION_TARGETS.get(target);
+    }
+
+    /** Live modifier that preserves a packet-specific translation across supported derivations. */
+    private static final class ProjectedModifier<T> extends StructureModifier<T> {
+        private final LiveFieldProjection projection;
+        private final Object wrapper;
+        private final Object view;
+        private final Class<?> selectedFieldType;
+        private final Class<?> protocolFieldType;
+        private final EquivalentConverter<T> converter;
+
+        private ProjectedModifier(LiveFieldProjection projection, Object wrapper, Object view,
+                                  Class<?> selectedFieldType, Class<?> protocolFieldType,
+                                  EquivalentConverter<T> converter) {
+            super(view, selectedFieldType, converter);
+            this.projection = projection;
+            this.wrapper = wrapper;
+            this.view = view;
+            this.selectedFieldType = selectedFieldType;
+            this.protocolFieldType = protocolFieldType;
+            this.converter = converter;
+        }
+
+        @Override
+        public int size() {
+            return 1;
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public T read(int index) {
+            checkSingleFieldIndex(index, projection.fieldType.getSimpleName());
+            Object raw = projection.read(wrapper);
+            projection.updateView(view, raw);
+            return converter == null ? (T) raw : converter.getSpecific(raw);
+        }
+
+        @Override
+        public StructureModifier<T> write(int index, T value) {
+            checkSingleFieldIndex(index, projection.fieldType.getSimpleName());
+            Object raw = converter == null ? value : converter.getGeneric(value);
+            projection.write(wrapper, raw);
+            projection.updateView(view, raw);
+            return this;
+        }
+
+        @Override
+        public StructureModifier<T> writeDefaults() {
+            Object rawDefault = projection.defaultValue();
+            @SuppressWarnings("unchecked")
+            T value = converter == null ? (T) rawDefault : converter.getSpecific(rawDefault);
+            return write(0, value);
+        }
+
+        @Override
+        public <U> StructureModifier<U> withType(Class<U> type) {
+            // The local StructureModifier explicitly treats Object.class as a wildcard. Each
+            // synthetic projection target contains exactly one backing field, so preserve that
+            // single live raw value rather than returning an empty or detached modifier.
+            if (type != Object.class && !projection.supportsFieldType(type)) {
+                return new StructureModifier<>(null, type);
+            }
+            return new ProjectedModifier<>(projection, wrapper, view, type, protocolFieldType, null);
+        }
+
+        @Override
+        public <U> StructureModifier<U> withType(Class<U> type, EquivalentConverter<U> typeConverter) {
+            if (typeConverter == null) {
+                if (!isCompatibleSelector(type)) {
+                    return new StructureModifier<>(null, type);
+                }
+                return new ProjectedModifier<>(projection, wrapper, view,
+                        converterFieldType(null), protocolFieldType, null);
+            }
+            return withConverter(typeConverter);
+        }
+
+        @Override
+        public <U> StructureModifier<U> withParamType(Class<?> type, EquivalentConverter<U> typeConverter,
+                                                       int parameterIndex) {
+            // This local-only overload has no counterpart at the pinned ProtocolLib revision.
+            // Keep the local base behavior: the converter's generic field type selects the view.
+            return withConverter(typeConverter);
+        }
+
+        @Override
+        public <R> StructureModifier<R> withParamType(Class<?> type, EquivalentConverter<R> typeConverter,
+                                                       Class<?>... parameterTypes) {
+            // The pinned ProtocolLib overload filters the field selector and generic parameters.
+            // These synthetic raw fields are not parameterized, so only an empty parameter list
+            // can select them.
+            if (!isCompatibleParamType(type, parameterTypes)
+                    || !supportsConverter(typeConverter)) {
+                return new StructureModifier<>(null, type, typeConverter);
+            }
+            return new ProjectedModifier<>(projection, wrapper, view,
+                    converterFieldType(typeConverter), protocolFieldType, typeConverter);
+        }
+
+        @Override
+        public StructureModifier<T> withTarget(Object newTarget) {
+            ProjectionTargetBinding binding = getProjectionTargetBinding(newTarget);
+            if (binding != null && binding.projection == projection
+                    && projection.supportsWrapper(binding.wrapper)) {
+                return new ProjectedModifier<>(projection, binding.wrapper, newTarget,
+                        selectedFieldType, protocolFieldType, converter);
+            }
+            if (projection.supportsWrapper(newTarget)) {
+                return new ProjectedModifier<>(projection, newTarget,
+                        createProjectionTarget(projection, newTarget), selectedFieldType,
+                        protocolFieldType, converter);
+            }
+            return new StructureModifier<>(null, selectedFieldType, converter);
+        }
+
+        private <U> StructureModifier<U> withConverter(EquivalentConverter<U> typeConverter) {
+            if (typeConverter == null || !supportsConverter(typeConverter)) {
+                Class<?> emptyType = typeConverter == null ? projection.fieldType : typeConverter.getGenericType();
+                return new StructureModifier<>(null, emptyType, typeConverter);
+            }
+            return new ProjectedModifier<>(projection, wrapper, view,
+                    converterFieldType(typeConverter), protocolFieldType, typeConverter);
+        }
+
+        private boolean isCompatibleParamType(Class<?> type, Class<?>[] parameterTypes) {
+            // Match the selector type exposed by the ProtocolLib accessor. For example, the
+            // pair accessor is backed by a synthetic long here, but ProtocolLib selects a
+            // ChunkCoordIntPair field before applying the converter.
+            if (!isCompatibleSelector(type) || parameterTypes == null || parameterTypes.length != 0) {
+                return false;
+            }
+            return true;
+        }
+
+        private boolean isCompatibleSelector(Class<?> type) {
+            return type != null && type.isAssignableFrom(protocolFieldType);
+        }
+
+        private boolean supportsConverter(EquivalentConverter<?> typeConverter) {
+            if (typeConverter == null) {
+                return true;
+            }
+            Class<?> genericType = typeConverter.getGenericType();
+            return genericType == Object.class || projection.supportsFieldType(genericType);
+        }
+
+        private Class<?> converterFieldType(EquivalentConverter<?> typeConverter) {
+            return typeConverter == null || typeConverter.getGenericType() != Object.class
+                    ? projection.fieldType
+                    : Object.class;
+        }
+    }
+
+    private static boolean sameFieldType(Class<?> first, Class<?> second) {
+        if (first == null || second == null) {
+            return false;
+        }
+        return boxedFieldType(first).equals(boxedFieldType(second));
+    }
+
+    private static Class<?> boxedFieldType(Class<?> type) {
+        if (!type.isPrimitive()) {
+            return type;
+        }
+        if (type == long.class) return Long.class;
+        if (type == int.class) return Integer.class;
+        if (type == short.class) return Short.class;
+        if (type == byte.class) return Byte.class;
+        if (type == boolean.class) return Boolean.class;
+        if (type == float.class) return Float.class;
+        if (type == double.class) return Double.class;
+        if (type == char.class) return Character.class;
+        return type;
+    }
+
+    private static long chunkKey(WrapperPlayServerUnloadChunk unloadChunk) {
+        return PacketWrapper.getChunkKey(unloadChunk.getChunkX(), unloadChunk.getChunkZ());
+    }
+
+    private static UserProfile profile(WrapperLoginClientLoginStart loginStart) {
+        return new UserProfile(loginStart.getPlayerUUID().orElse(null), loginStart.getUsername());
+    }
+
+    private static void checkSingleFieldIndex(int index, String fieldType) {
+        if (index != 0) {
+            throw new IndexOutOfBoundsException("No projected field of type " + fieldType + " at index " + index);
         }
     }
 
@@ -222,6 +541,12 @@ public class PacketContainer extends AbstractStructure implements java.io.Serial
     }
 
     public StructureModifier<Long> getLongs() {
+        if (handle instanceof WrapperPlayServerUnloadChunk unloadChunk) {
+            return new ProjectedModifier<>(LiveFieldProjection.UNLOAD_CHUNK_KEY, unloadChunk,
+                    createProjectionTarget(LiveFieldProjection.UNLOAD_CHUNK_KEY, unloadChunk),
+                    LiveFieldProjection.UNLOAD_CHUNK_KEY.fieldType,
+                    LiveFieldProjection.UNLOAD_CHUNK_KEY.fieldType, null);
+        }
         return new StructureModifier<>(structureTarget(), long.class);
     }
 
@@ -309,15 +634,13 @@ public class PacketContainer extends AbstractStructure implements java.io.Serial
         // PacketEvents models LOGIN_START as separate username + optional UUID fields,
         // while ProtocolLib exposes the same logical data as a GameProfile. FastLogin and
         // other ProtocolLib consumers therefore expect getGameProfiles().read(0) to exist.
-        // Provide a tiny compatibility view for this packet instead of pretending the
-        // PacketEvents wrapper physically contains a UserProfile field.
+        // Project name and UUID reads/writes onto the live PacketEvents wrapper instead of
+        // exposing a detached synthetic UserProfile field.
         if (handle instanceof WrapperLoginClientLoginStart loginStart) {
-            UserProfile profile = new UserProfile(
-                    loginStart.getPlayerUUID().orElse(null),
-                    loginStart.getUsername());
-            return new StructureModifier<>(
-                    new LoginStartProfileView(profile),
-                    UserProfile.class,
+            return new ProjectedModifier<>(LiveFieldProjection.LOGIN_START_PROFILE, loginStart,
+                    createProjectionTarget(LiveFieldProjection.LOGIN_START_PROFILE, loginStart),
+                    LiveFieldProjection.LOGIN_START_PROFILE.fieldType,
+                    MinecraftReflection.getGameProfileClass(),
                     WrappedGameProfile.getConverter());
         }
         return convert(WrappedGameProfile.getConverter());
@@ -355,6 +678,13 @@ public class PacketContainer extends AbstractStructure implements java.io.Serial
 
     @SuppressWarnings("unchecked")
     public StructureModifier<ChunkCoordIntPair> getChunkCoordIntPairs() {
+        if (handle instanceof WrapperPlayServerUnloadChunk unloadChunk) {
+            return new ProjectedModifier<>(LiveFieldProjection.UNLOAD_CHUNK_KEY, unloadChunk,
+                    createProjectionTarget(LiveFieldProjection.UNLOAD_CHUNK_KEY, unloadChunk),
+                    LiveFieldProjection.UNLOAD_CHUNK_KEY.fieldType,
+                    ChunkCoordIntPair.class,
+                    ChunkCoordIntPair.getConverter());
+        }
         return (StructureModifier<ChunkCoordIntPair>) (StructureModifier<?>)
                 new StructureModifier<>(structureTarget(), long.class, ChunkCoordIntPair.getConverter());
     }

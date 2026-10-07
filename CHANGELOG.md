@@ -2,6 +2,21 @@
 
 All notable changes to ProtocolLib2PacketEvents (P2P) are documented here.
 
+## [1.0.6] - 2026-10-07
+
+### Fixed
+
+- Fixed QuickShop-Hikari `PLAY.SERVER.UNLOAD_CHUNK` compatibility. `PacketContainer#getLongs()` now exposes the packed chunk key at index `0`, and writes update PacketEvents' live chunk X/Z values.
+- Made `getChunkCoordIntPairs()` a live read/write view over unload-chunk coordinates, including supported derived modifiers and target changes.
+- Made the `LOGIN.CLIENT.LOGIN_START#getGameProfiles()` compatibility projection write username and UUID changes through to the PacketEvents wrapper.
+- Made `CHUNK_DATA#getIntegers()` coordinate writes update the nested PacketEvents `Column` as well as reads.
+- Added regression coverage for selector behavior, derived views, helper methods, retargeting, and wrapper write-through.
+
+### Validation
+
+- Java 17 Maven test suite: 19 tests, 0 failures, 0 errors, 1 skipped (PacketEvents server-runtime assumption).
+- Maven package: passed for the `1.0.6` release JAR.
+
 ## [1.0.5] - 2026-10-05
 
 ### Fixed

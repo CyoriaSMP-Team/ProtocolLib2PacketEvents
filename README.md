@@ -35,7 +35,7 @@ API bucket. The `paper-api` version in `pom.xml` is a compile-time surface only 
 
 ```bash
 mvn package
-# -> target/ProtocolLib2PacketEvents-1.0.4.jar
+# -> target/ProtocolLib2PacketEvents-1.0.6.jar
 ```
 
 Drop the jar in `plugins/` alongside PacketEvents. `plugin.yml` declares `provides: [ProtocolLib]`,
