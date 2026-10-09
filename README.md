@@ -1,4 +1,15 @@
-# ProtocolLib2PacketEvents (P2P)
+<!-- CYTECH_README_REFRESH:START -->
+<div align="center">
+<a href="https://github.com/CyoriaSMP-Team/ProtocolLib2PacketEvents"><img width="100%" alt="ProtocolLib2PacketEvents banner" src="https://capsule-render.vercel.app/api?type=waving&color=0:101D1B,100:16A34A&height=210&section=header&text=ProtocolLib2PacketEvents&fontSize=40&fontColor=ffffff&fontAlignY=36&desc=ProtocolLib%20compatibility%20powered%20by%20PacketEvents&descAlignY=59&descSize=16"></a>
+
+<img alt="Project: Minecraft Plugin" src="https://img.shields.io/badge/PROJECT-Minecraft%20Plugin-16A34A?style=flat-square&labelColor=101D1B"> <img alt="Stack: Java · PacketEvents" src="https://img.shields.io/badge/STACK-Java%20%C2%B7%20PacketEvents-16A34A?style=flat-square&labelColor=101D1B">
+
+<a href="https://github.com/CyoriaSMP-Team/ProtocolLib2PacketEvents">Source</a> · <a href="https://github.com/CyoriaSMP-Team/ProtocolLib2PacketEvents/issues">Issues</a> · <a href="https://github.com/CyoriaSMP-Team/ProtocolLib2PacketEvents/releases">Releases</a>
+
+</div>
+<!-- CYTECH_README_REFRESH:END -->
+
+---
 
 A ProtocolLib-compatible [ProtocolLib](https://github.com/dmulloy2/ProtocolLib) compatibility layer powered by
 [PacketEvents](https://github.com/retrooper/packetevents).
