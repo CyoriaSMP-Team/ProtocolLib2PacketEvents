@@ -204,3 +204,19 @@ Third-party components (see [NOTICE](NOTICE) for detail):
   public API surface so existing plugins can link against it; the alias table in
   `src/generator/resources/protocollib-aliases.tsv` is a packet-name mapping derived from
   ProtocolLib's public API declarations.
+
+---
+
+<!-- CYTECH_STAR_HISTORY:START -->
+
+## Star History
+
+<a href="https://star-history.dera.page/#CyoriaSMP-Team/ProtocolLib2PacketEvents&type=date&legend=top-left">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=CyoriaSMP-Team/ProtocolLib2PacketEvents&type=date&legend=top-left&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=CyoriaSMP-Team/ProtocolLib2PacketEvents&type=date&legend=top-left" />
+    <img alt="GitHub star history for CyoriaSMP-Team/ProtocolLib2PacketEvents" src="https://star-history.dera.page/svg?repos=CyoriaSMP-Team/ProtocolLib2PacketEvents&type=date&legend=top-left" width="800" />
+  </picture>
+</a>
+
+<!-- CYTECH_STAR_HISTORY:END -->
