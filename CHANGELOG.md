@@ -1,3 +1,10 @@
+## 1.0.10 — Late-binding race during Java Premium login
+
+- Fix the v1.0.9 startup race where `NetworkManagerInjector.getTemporaryInjector` refuses to associate a valid active PacketEvents pre-login Channel with the generated `TemporaryPlayer` if native `packet_handler` has not appeared yet. FastLoginPlus thus loses its Channel for the whole verification session and aborts as disconnected.
+- Bind **active Channel first**, without requiring the native Minecraft Connection to exist yet; then refresh/resolve the genuine NMS Connection lazily every time FastLoginPlus calls `TemporaryPlayerFactory.getInjectorFromPlayer`. A non-active or non-Netty channel remains rejected.
+- Do not change the authentication policy or inject encryption into incomplete channels. The native Connection is still required when the AES setter is called; missing Connection cannot silently allow a cracked bypass.
+- Add regression coverage for active pre-login channels before native `packet_handler` is present and late handler attachment.
+
 ## 1.0.9 — FastLoginPlus native login channel association
 
 - Associate the ProtocolLib `TemporaryPlayer` generated during PacketEvents pre-login callbacks with its actual Netty injector instead of leaving `TemporaryPlayerFactory.getInjectorFromPlayer()` null. FastLoginPlus uses that accessor during Mojang session verification.

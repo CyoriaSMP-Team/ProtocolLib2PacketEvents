@@ -35,9 +35,28 @@ public class TemporaryPlayerFactory {
     }
 
     public static Injector getInjectorFromPlayer(Player player) {
-        return player instanceof TemporaryPlayer
-                ? ((TemporaryPlayer) player).getInjector()
-                : null;
+        if (!(player instanceof TemporaryPlayer temporary)) return null;
+        Injector injector = temporary.getInjector();
+        // FastLoginPlus retrieves this adapter at multiple asynchronous login
+        // phases. When LOGIN_START ran before the PacketEvents/native pipeline
+        // was fully initialized, retry on the same live User+Channel rather
+        // than permanently treating a legitimate connection as disconnected.
+        com.github.retrooper.packetevents.protocol.player.User user =
+                TemporaryPlayerAdapter.getUser(player);
+        if (user != null) {
+            org.bukkit.plugin.Plugin plugin = com.comphenix.protocol.ProtocolLibrary.getPlugin();
+            if (plugin instanceof com.comphenix.protocol.ProtocolLib bridge) {
+                Injector resolved = bridge.getTemporaryInjector(user, player);
+                if (resolved != null) {
+                    if (resolved != injector) temporary.setInjector(resolved);
+                    injector = resolved;
+                }
+            }
+        }
+        if (injector instanceof com.comphenix.protocol.injector.netty.channel.NettyChannelInjector netty) {
+            netty.refreshNativeConnection();
+        }
+        return injector;
     }
 
     public static void setInjectorForPlayer(Player player, Injector injector) {
