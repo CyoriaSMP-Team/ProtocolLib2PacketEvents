@@ -102,6 +102,24 @@ public class FuzzyReflection {
                 return accessible(method);
             }
         }
+        // FastLoginPlus still asks for the obfuscated Minecraft Connection
+        // method "a(SecretKey)". On remapped Paper/Leaf 1.21.11 the equivalent
+        // is named setEncryptionKey(SecretKey). Resolve by exact signature only
+        // when it is unique: never guess an arbitrary encryption/packet method.
+        if ("a".equals(name) && parameters.length == 1
+                && parameters[0] == javax.crypto.SecretKey.class) {
+            Method found = null;
+            for (Method method : getMethods()) {
+                if (!java.util.Arrays.equals(method.getParameterTypes(), parameters)
+                        || method.getReturnType() != void.class) continue;
+                if (found != null && !found.equals(method)) {
+                    throw new IllegalArgumentException("Ambiguous SecretKey encryption methods on "
+                            + source.getName());
+                }
+                found = method;
+            }
+            if (found != null) return accessible(found);
+        }
         throw new IllegalArgumentException("Unable to find method " + name + " on " + source.getName());
     }
 

@@ -10,7 +10,7 @@ main: com.comphenix.protocol.ProtocolLib
 version: 5.4.0
 author: CyoriaSMP Team
 description: A drop-in ProtocolLib compatibility layer powered by PacketEvents.
-p2p-version: 1.0.8
+p2p-version: 1.0.9
 protocol-lib-api-version: 5.4.0
 depend: [packetevents]
 provides: [ProtocolLib]

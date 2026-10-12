@@ -41,6 +41,29 @@ public class NetworkManagerInjector implements AutoCloseable {
 
     public Injector getInjector(Player player) { return factory.fromPlayer(player); }
 
+    /**
+     * ProtocolLib's temporary player is not a CraftPlayer, so never pass it to
+     * PacketEvents PlayerManager.getChannel(Player): resolve the channel from
+     * the pre-login User instead. FastLoginPlus relies on this exact facade's
+     * getInjectorFromPlayer() to locate the real Netty channel and NMS
+     * Connection for session verification and encryption.
+     */
+    public Injector getTemporaryInjector(com.github.retrooper.packetevents.protocol.player.User user,
+                                         Player temporary) {
+        if (closed || user == null || temporary == null) return null;
+        if (!(user.getChannel() instanceof Channel channel) || !channel.isActive()) return null;
+        Injector injector = factory.fromChannel(channel);
+        if (!(injector instanceof com.comphenix.protocol.injector.netty.channel.NettyChannelInjector netty)) {
+            return null;
+        }
+        netty.refreshNativeConnection();
+        // A stale/partial channel cannot authenticate a login. Fail closed:
+        // don't give FastLoginPlus an injector whose networkManager is null.
+        if (!netty.hasNativeConnection()) return null;
+        netty.setPlayer(temporary);
+        return netty;
+    }
+
     public void invalidate(Player player) {
         if (player == null) return;
         Injector injector = factory.invalidate(player);
