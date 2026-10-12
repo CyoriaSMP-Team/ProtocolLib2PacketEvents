@@ -1,3 +1,10 @@
+## 1.0.7 — Deferred Pre-login Channel Fix
+
+- Fix deferred inbound `LOGIN.CLIENT.LOGIN_START` failure when ProtocolLib2PacketEvents had a generated `TemporaryPlayer` instead of a Bukkit `CraftPlayer`: use the already associated PacketEvents pre-login `User` and its live Netty Channel for silent transport instead of `PlayerManager.receivePacketSilently(Player, ...)`.
+- Also route pre-login clientbound packets through the same User to avoid the analogous invalid CraftPlayer cast.
+- Reject missing temporary User/channel rather than bypassing login authentication or swallowing the packet; ordinary CraftPlayer packet transport is unchanged.
+- Add focused offline transport-selection regression tests; Maven test suite passes.
+
 # Changelog
 
 All notable changes to ProtocolLib2PacketEvents (P2P) are documented here.
