@@ -1,3 +1,10 @@
+## 1.0.11 — Strict Channel Field Resolution in FastLoginPlus Adapter
+
+- Fix `FuzzyReflection.getFieldValue(injector, Channel.class, true)` selecting the **preceding Object-typed `networkManager` field** instead of NettyChannelInjector's actual `Channel channel` field. The wrong bidirectional assignability check caused an inactive/null Channel or ClassCastException when FastLoginPlus examined a Java Premium connection during async Mojang session verification, then logged `disconnected during session verification` and timed the player out.
+- Only match fields whose declared type is assignable to the requested class. This is the reflection rule that prevents unsafe casts; don't fall back to unrelated superclasses like `Object`.
+- Add regression tests against the real NettyChannelInjector and a separate Object-before-Channel fixture. Both tests **fail on v1.0.10 and pass on v1.0.11**.
+- Preserve all previous 1.0.7–1.0.10 transport/encryption/late-handler fixes and do not disable FastLoginPlus or AuthMe authentication.
+
 ## 1.0.10 — Late-binding race during Java Premium login
 
 - Fix the v1.0.9 startup race where `NetworkManagerInjector.getTemporaryInjector` refuses to associate a valid active PacketEvents pre-login Channel with the generated `TemporaryPlayer` if native `packet_handler` has not appeared yet. FastLoginPlus thus loses its Channel for the whole verification session and aborts as disconnected.

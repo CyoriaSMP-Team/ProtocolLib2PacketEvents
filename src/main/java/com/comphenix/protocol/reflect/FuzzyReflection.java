@@ -45,7 +45,12 @@ public class FuzzyReflection {
         if (instance == null) throw new IllegalArgumentException("instance cannot be null");
         for (Class<?> current = instance.getClass(); current != null; current = current.getSuperclass()) {
             for (Field field : current.getDeclaredFields()) {
-                if (fieldClass.isAssignableFrom(field.getType()) || field.getType().isAssignableFrom(fieldClass)) {
+                // Only accept fields whose declared value can be safely read as
+                // fieldClass. The reverse assignability check incorrectly chose
+                // a preceding Object networkManager field when FastLoginPlus
+                // asked for io.netty.channel.Channel, returning null or throwing
+                // ClassCastException even though the real Channel was present.
+                if (fieldClass.isAssignableFrom(field.getType())) {
                     try {
                         if (forceAccess) field.setAccessible(true);
                         return fieldClass.cast(field.get(instance));
