@@ -1,3 +1,10 @@
+## 1.0.8 — Constructor-safe PacketEvents wrapper allocation
+
+- Fix `NullPointerException: wrappper.bufferLock is null` when FastLoginPlus sends `LOGIN.SERVER.ENCRYPTION_REQUEST` with a `PacketContainer` constructed from scratch.
+- ProtocolLib packet constructors use `ObjectAllocator` to allocate wrappers without their constructors. For `LOGIN.ENCRYPTION_REQUEST`, use PacketEvents' own security-preserving public constructor (`shouldAuthenticate=true`). For other wrappers, restore mandatory per-instance `bufferLock` and registry holder using a genuine constructor-initialized PacketWrapper of the same client/server protocol version.
+- Keep existing packet-specific fields and ProtocolLib write behavior (including FastLoginPlus's `shouldAuthenticate=true` field), and never share locks between newly created wrappers.
+- Leave pre-login PacketEvents User/Channel routing from v1.0.7 intact; no changes to the AuthMe or FastLoginPlus login policies.
+
 ## 1.0.7 — Deferred Pre-login Channel Fix
 
 - Fix deferred inbound `LOGIN.CLIENT.LOGIN_START` failure when ProtocolLib2PacketEvents had a generated `TemporaryPlayer` instead of a Bukkit `CraftPlayer`: use the already associated PacketEvents pre-login `User` and its live Netty Channel for silent transport instead of `PlayerManager.receivePacketSilently(Player, ...)`.

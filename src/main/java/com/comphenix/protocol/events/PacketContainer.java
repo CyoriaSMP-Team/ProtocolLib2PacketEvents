@@ -40,6 +40,7 @@ import com.github.retrooper.packetevents.protocol.player.ClientVersion;
 import com.github.retrooper.packetevents.protocol.player.UserProfile;
 import com.github.retrooper.packetevents.wrapper.PacketTypeData;
 import com.github.retrooper.packetevents.wrapper.login.client.WrapperLoginClientLoginStart;
+import com.github.retrooper.packetevents.wrapper.login.server.WrapperLoginServerEncryptionRequest;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerChunkData;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerUnloadChunk;
 import com.github.retrooper.packetevents.wrapper.PacketWrapper;
@@ -877,11 +878,36 @@ public class PacketContainer extends AbstractStructure implements java.io.Serial
                     + ", so it cannot be constructed from scratch. Build the packet bytes yourself and send "
                     + "them through PacketEvents directly.");
         }
-        PacketWrapper<?> wrapper = ObjectAllocator.allocate(wrapperClass);
         ServerVersion serverVersion = PacketEvents.getAPI().getServerManager().getVersion();
         ClientVersion clientVersion = serverVersion.toClientVersion();
         int id = type.toPacketEvents().getId(clientVersion);
+        if (id < 0) {
+            throw new IllegalStateException("Packet " + type + " is unsupported by client version " + clientVersion);
+        }
+        if (wrapperClass == WrapperLoginServerEncryptionRequest.class) {
+            // Authentication is security-sensitive: let PacketEvents' own public
+            // constructor initialize its immutable bufferLock, registries and
+            // shouldAuthenticate=true default. FastLoginPlus then fills in its
+            // actual public key, verify token and explicitly requests auth.
+            // Never synthesize a false online-authentication flag here.
+            WrapperLoginServerEncryptionRequest encryption =
+                    new WrapperLoginServerEncryptionRequest("", new byte[0], new byte[0], true);
+            encryption.setClientVersion(clientVersion);
+            return encryption;
+        }
+        PacketWrapper<?> wrapper = ObjectAllocator.allocate(wrapperClass);
         try {
+            // ObjectAllocator intentionally bypasses the subclass constructors, but
+            // PacketWrapper's superclass constructor is NOT optional: it creates the
+            // final bufferLock and initializes the registry holder. In particular,
+            // FastLogin's freshly built LOGIN.SERVER.ENCRYPTION_REQUEST otherwise
+            // crashes in PacketEvents ProtocolManager.transformWrappers() while
+            // sending through the pre-login User channel.
+            //
+            // Use a genuine, constructor-initialized PacketWrapper as the source
+            // of per-instance runtime state (never share a lock across packets).
+            PacketWrapper<?> initialized = new PacketWrapper<>(clientVersion, serverVersion, id);
+            copyRuntimeStateFromConstructor(wrapper, initialized);
             setField(wrapper, "clientVersion", clientVersion);
             setField(wrapper, "serverVersion", serverVersion);
             setField(wrapper, "packetTypeData", new PacketTypeData(type.toPacketEvents(), id));
@@ -889,6 +915,20 @@ public class PacketContainer extends AbstractStructure implements java.io.Serial
             throw new IllegalStateException("Failed to initialize an allocated wrapper for " + type, e);
         }
         return wrapper;
+    }
+
+    /** Restore the PacketWrapper superclass invariants after constructor-free allocation. */
+    static void copyRuntimeStateFromConstructor(PacketWrapper<?> allocated,
+                                                PacketWrapper<?> constructorInitialized)
+            throws ReflectiveOperationException {
+        Field bufferLock = PacketWrapper.class.getDeclaredField("bufferLock");
+        bufferLock.setAccessible(true);
+        Object lock = bufferLock.get(constructorInitialized);
+        if (lock == null) throw new IllegalStateException("PacketEvents constructor did not initialize bufferLock");
+        bufferLock.set(allocated, lock);
+        Field registryHolder = PacketWrapper.class.getDeclaredField("registries");
+        registryHolder.setAccessible(true);
+        registryHolder.set(allocated, registryHolder.get(constructorInitialized));
     }
 
     private static Class<? extends PacketWrapper<?>> wrapperClassOf(PacketType type) {
