@@ -57,9 +57,12 @@ public class NetworkManagerInjector implements AutoCloseable {
             return null;
         }
         netty.refreshNativeConnection();
-        // A stale/partial channel cannot authenticate a login. Fail closed:
-        // don't give FastLoginPlus an injector whose networkManager is null.
-        if (!netty.hasNativeConnection()) return null;
+        // The PacketEvents LOGIN_START callback can precede the native
+        // packet_handler's installation. Channel access is independently safe:
+        // bind now so FastLoginPlus can track a still-connected pre-login user.
+        // The native Connection is resolved lazily when FastLoginPlus asks for
+        // the injector again during premium verification/AES initialization.
+        // No new encryption or authentication decision is made here.
         netty.setPlayer(temporary);
         return netty;
     }
