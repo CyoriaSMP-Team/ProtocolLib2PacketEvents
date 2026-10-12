@@ -27,6 +27,15 @@ public final class TemporaryPlayerAdapter {
         }
         Player player = TemporaryPlayerFactory.createTemporaryPlayer();
         USERS.put(player, user);
+        // The pre-login facade must carry the same native Connection as its
+        // PacketEvents User. Without it, FastLoginPlus's ProtocolLibCompat
+        // considers every player disconnected during Mojang session checks.
+        org.bukkit.plugin.Plugin plugin = com.comphenix.protocol.ProtocolLibrary.getPlugin();
+        if (plugin instanceof com.comphenix.protocol.ProtocolLib bridge) {
+            com.comphenix.protocol.injector.netty.Injector injector =
+                    bridge.getTemporaryInjector(user, player);
+            if (injector != null) TemporaryPlayerFactory.setInjectorForPlayer(player, injector);
+        }
         return player;
     }
 

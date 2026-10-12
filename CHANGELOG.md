@@ -1,3 +1,11 @@
+## 1.0.9 — FastLoginPlus native login channel association
+
+- Associate the ProtocolLib `TemporaryPlayer` generated during PacketEvents pre-login callbacks with its actual Netty injector instead of leaving `TemporaryPlayerFactory.getInjectorFromPlayer()` null. FastLoginPlus uses that accessor during Mojang session verification.
+- Resolve the real `net.minecraft.network.Connection` from the channel's existing `packet_handler`, and update cached Netty injectors that were created before the native handler was installed. FastLoginPlus needs the genuine Connection (not the bare Netty Channel) to enable packet encryption.
+- Explicitly refuse binding a non-active channel or an injector lacking a native Connection; never fall back to cracked login in P2P code and never circumvent Mojang verification.
+- Handle FastLoginPlus's legacy method lookup `a(SecretKey)` on remapped Minecraft 1.21.11 where the native Connection method is named `setEncryptionKey(SecretKey)`; fallback only for one unambiguous void/SecretKey method.
+- Keep v1.0.8's encryption wrapper constructor fix and v1.0.7's temporary-user receive/send transport.
+
 ## 1.0.8 — Constructor-safe PacketEvents wrapper allocation
 
 - Fix `NullPointerException: wrappper.bufferLock is null` when FastLoginPlus sends `LOGIN.SERVER.ENCRYPTION_REQUEST` with a `PacketContainer` constructed from scratch.

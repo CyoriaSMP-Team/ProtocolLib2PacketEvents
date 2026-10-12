@@ -32,7 +32,11 @@ public class NettyChannelInjector implements Injector {
     private static final String ENCODER = "p2p-wire-encoder";
     private static final String OUTBOUND = "p2p-outbound";
     private volatile Player player;
-    private final Object networkManager;
+    // The Netty channel is discovered before the native Minecraft Connection
+    // handler may be in the pipeline. Refresh it as soon as the first LOGIN
+    // packet arrives so FastLoginPlus can enable AES encryption on the real
+    // NMS Connection. It must not be the raw Netty Channel or a dummy handle.
+    private volatile Object networkManager;
     private final Channel channel;
     private final ListenerManager listenerManager;
     private final InjectionFactory factory;
@@ -49,11 +53,34 @@ public class NettyChannelInjector implements Injector {
         this.player = player;
         this.networkManager = networkManager;
         this.channel = channel;
+        refreshNativeConnection();
         this.listenerManager = listenerManager;
         this.factory = factory;
         this.reporter = reporter;
         this.protocol = player == null ? PacketType.Protocol.HANDSHAKING : PacketType.Protocol.PLAY;
     }
+    /**
+     * Find the actual net.minecraft.network.Connection handler already installed
+     * by the Minecraft server. No field/type guessing, no reflection into the
+     * packet pipeline and no mutation of its handler order.
+     */
+    public void refreshNativeConnection() {
+        if (networkManager != null || channel == null) return;
+        io.netty.channel.ChannelHandler packetHandler = channel.pipeline().get("packet_handler");
+        if (packetHandler == null) return;
+        for (Class<?> clazz = packetHandler.getClass(); clazz != null; clazz = clazz.getSuperclass()) {
+            if ("net.minecraft.network.Connection".equals(clazz.getName())) {
+                networkManager = packetHandler;
+                return;
+            }
+        }
+    }
+
+    public boolean hasNativeConnection() {
+        refreshNativeConnection();
+        return networkManager != null;
+    }
+
     public SocketAddress getAddress() { return channel == null ? null : channel.remoteAddress(); }
     public int getProtocolVersion() {
         if (player == null || PacketEvents.getAPI() == null) return -1;

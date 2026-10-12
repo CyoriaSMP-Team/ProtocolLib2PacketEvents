@@ -182,6 +182,14 @@ public class ProtocolLib extends JavaPlugin implements Listener {
         }
     }
 
+    /** Resolve the pre-login facade to its native connection for auth plugins. */
+    public com.comphenix.protocol.injector.netty.Injector getTemporaryInjector(
+            com.github.retrooper.packetevents.protocol.player.User user,
+            org.bukkit.entity.Player temporary) {
+        return networkManagerInjector == null ? null
+                : networkManagerInjector.getTemporaryInjector(user, temporary);
+    }
+
     @Override
     public void onDisable() {
         if (internalListener != null) {

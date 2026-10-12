@@ -55,7 +55,10 @@ public class InjectionFactory implements AutoCloseable {
     public Injector fromChannel(Channel channel) {
         if (channel == null) return EmptyInjector.WITHOUT_PLAYER;
         Injector existing = byChannel.get(channel);
-        if (existing != null) return existing;
+        if (existing != null) {
+            if (existing instanceof NettyChannelInjector netty) netty.refreshNativeConnection();
+            return existing;
+        }
         Injector created = new NettyChannelInjector(null, null, channel, listeners, this, reporter);
         Injector previous = byChannel.putIfAbsent(channel, created);
         return previous == null ? created : previous;
