@@ -90,7 +90,9 @@ public class ProtocolLib extends JavaPlugin implements Listener {
                 errorReporter);
 
         this.protocolConfig = new ProtocolConfig(this);
-        this.scheduler = new DefaultScheduler(this);
+        this.scheduler = com.comphenix.protocol.utility.Util.isUsingFolia()
+                ? new com.comphenix.protocol.scheduler.FoliaScheduler(this)
+                : new DefaultScheduler(this);
         ProtocolLibrary.init(this, protocolConfig, protocolManager, scheduler, errorReporter);
         ProtocolLibrary.attachRuntime(asynchronousManager, getDescription().getVersion());
 
