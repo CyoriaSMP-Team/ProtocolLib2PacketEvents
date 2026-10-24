@@ -6,10 +6,10 @@ import com.comphenix.protocol.injector.netty.Injector;
 import com.comphenix.protocol.injector.netty.channel.InjectionFactory;
 import com.github.retrooper.packetevents.PacketEvents;
 import io.netty.channel.Channel;
-import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;
-import org.bukkit.scheduler.BukkitTask;
+import com.comphenix.protocol.ProtocolLibrary;
+import com.comphenix.protocol.scheduler.Task;
 
 import java.lang.reflect.Field;
 import java.util.ArrayList;
@@ -32,7 +32,7 @@ public class NetworkManagerInjector implements AutoCloseable {
     private final Set<Channel> observed = ConcurrentHashMap.newKeySet();
     private volatile boolean closed;
     private volatile boolean injected;
-    private BukkitTask scanTask;
+    private Task scanTask;
 
     public NetworkManagerInjector(Plugin plugin, ListenerManager listenerManager, ErrorReporter reporter) {
         this.plugin = plugin;
@@ -81,7 +81,11 @@ public class NetworkManagerInjector implements AutoCloseable {
         injected = true;
         scanChannels();
         if (plugin != null && plugin.getServer() != null) {
-            scanTask = plugin.getServer().getScheduler().runTaskTimer(plugin, this::scanChannels, 1L, 1L);
+            // Use the scheduler selected by ProtocolLib.onEnable(): Folia's
+            // GlobalRegionScheduler or the regular Bukkit scheduler. On Folia,
+            // CraftScheduler.runTaskTimer throws UnsupportedOperationException.
+            scanTask = ProtocolLibrary.getScheduler()
+                    .scheduleSyncRepeatingTask(this::scanChannels, 1L, 1L);
         }
     }
 

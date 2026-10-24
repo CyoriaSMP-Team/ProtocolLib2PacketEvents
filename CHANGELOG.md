@@ -1,3 +1,11 @@
+## Unreleased — Folia bootstrap and scheduler compatibility
+
+- Declare `folia-supported: true` so Folia accepts the bridge at plugin load.
+- Select the Folia scheduler facade instead of Bukkit's unsupported legacy scheduler when running under Folia.
+- Migrate `NetworkManagerInjector`'s periodic PacketEvents channel scan to that scheduler, avoiding the `CraftScheduler.runTaskTimer` `UnsupportedOperationException` observed on Folia 1.21.11.
+- Use actual `ScheduledTask` cancellation for Folia scans; add scheduler regression coverage. The global scheduler is only for plugin-wide work: player/world operations still require region-aware dispatch.
+- **Validation:** Maven build/tests pass. Live Folia + Java Premium/FastLoginPlus/QuickShop behavior is not yet certified; do not treat this as a production-safe drop-in without a staged join/chunk test.
+
 ## 1.0.11 — Strict Channel Field Resolution in FastLoginPlus Adapter
 
 - Fix `FuzzyReflection.getFieldValue(injector, Channel.class, true)` selecting the **preceding Object-typed `networkManager` field** instead of NettyChannelInjector's actual `Channel channel` field. The wrong bidirectional assignability check caused an inactive/null Channel or ClassCastException when FastLoginPlus examined a Java Premium connection during async Mojang session verification, then logged `disconnected during session verification` and timed the player out.
